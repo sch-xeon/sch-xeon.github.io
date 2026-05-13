@@ -44,9 +44,21 @@ function api(type, payload = {}) {
     answers: state.answers || {}
   };
 
-  supabase.from('live_sync').insert([
-    { event_type: 'session_update', payload: sessionPayload }
-  ]).catch(err => console.error("Database sync failed:", err));
+    // We remove .catch and handle the database output inside a clean background thread
+  supabase.from('live_sync')
+    .insert([{ event_type: 'session_update', payload: sessionPayload }])
+    .then(({ error }) => {
+      if (error) console.error("Database sync failed:", error);
+    });
+
+  if (type !== 'progress' && type !== 'answer') {
+    supabase.from('live_sync')
+      .insert([{ event_type: `student_${type}`, payload: { studentName: state.studentName, data: payload } }])
+      .then(({ error }) => {
+        if (error) console.error("Timeline insert failed:", error);
+      });
+  }
+
 
   if (type !== 'progress' && type !== 'answer') {
     supabase.from('live_sync').insert([
