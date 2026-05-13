@@ -28,12 +28,33 @@ const state = {
 localStorage.setItem(SESSION_KEY, state.sessionId);
 
 function api(type, payload = {}) {
-  fetch("/api/event", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type, sessionId: state.sessionId, payload }),
-  }).catch(() => {});
+  if (payload.roomCode) state.roomCode = payload.roomCode;
+  if (payload.startCode) state.startCode = payload.startCode;
+
+  const sessionPayload = {
+    sessionId: state.sessionId,
+    studentName: state.studentName || DEFAULT_NAME,
+    lastSeen: new Date().toLocaleTimeString(),
+    lastType: type,
+    roomCode: state.roomCode || payload.roomCode || "-",
+    startCode: state.startCode || payload.startCode || "-",
+    section: payload.section || (state.page === "mcq" ? "MCQ" : state.page === "frq" ? "FRQ" : "-"),
+    question: payload.question || (state.page === "mcq" ? mcq[state.qIndex]?.id : state.page === "frq" ? frqQuestions[state.frqIndex]?.id : "-"),
+    answer: payload.answer || "-",
+    answers: state.answers || {}
+  };
+
+  supabase.from('live_sync').insert([
+    { event_type: 'session_update', payload: sessionPayload }
+  ]).catch(err => console.error("Database sync failed:", err));
+
+  if (type !== 'progress' && type !== 'answer') {
+    supabase.from('live_sync').insert([
+      { event_type: `student_${type}`, payload: { studentName: state.studentName, data: payload } }
+    ]).catch(() => {});
+  }
 }
+
 
 function save() {
   localStorage.setItem("studentName", state.studentName);
@@ -437,26 +458,41 @@ function renderFRQ() {
 
 async function loadFrqImages() {
   try {
-    const images = await fetch("/api/frq-images").then(r => r.json());
-    state.frqImages = images || {};
+    const { data: files, error } = await supabase.storage.from('better').list('uploads');
+    if (error) throw error;
+
+    state.frqImages = {};
+    if (files) {
+      files.forEach(file => {
+        const match = file.name.match(/^frq_(\d+)_/);
+        if (match) {
+          const qNum = match[1];
+          const { data: urlData } = supabase.storage.from('better').getPublicUrl(`uploads/${file.name}`);
+          state.frqImages[String(qNum)] = {
+            url: urlData.publicUrl,
+            uploadedAt: new Date(file.created_at).toLocaleTimeString()
+          };
+        }
+      });
+    }
+    
     if (state.page === "frq") {
       const q = frqQuestions[state.frqIndex];
       const slot = document.getElementById("frqAdminImage");
       const image = q && state.frqImages[String(q.id)];
       if (slot) {
-        slot.innerHTML = image ? `<img src="${image.url}?v=${encodeURIComponent(image.uploadedAt || "")}" alt="Uploaded image for FRQ ${q.id}">` : "";
+        slot.innerHTML = image ? `<img src="${image.url}" alt="Uploaded image for FRQ ${q.id}">` : "";
       }
     }
   } catch (error) {
-    // The simulator should keep working even if the admin image poll misses once.
+    console.error("Failed loading bucket images:", error);
   }
 }
 
 function startAttachmentPoll() {
-  if (state.attachmentPoll) return;
   loadFrqImages();
-  state.attachmentPoll = setInterval(loadFrqImages, 2000);
 }
+
 
 function renderReview(section) {
   stopTimer();
@@ -590,3 +626,14 @@ function getChoiceText(choice) {
 }
 
 renderHome();
+supabase
+  .channel('student-live-channel')
+  .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'live_sync' }, (payload) => {
+    const change = payload.new;
+    if (change.event_type === 'file_uploaded' || change.event_type === 'file_removed') {
+      loadFrqImages();
+    }
+  })
+  .subscribe();
+
+loadFrqImages();
