@@ -36,9 +36,8 @@ async function loadUploads() {
     currentImages = {};
     if (files) {
       files.forEach(file => {
-        // Parse out which FRQ question slot (1, 2, 3, 4) this image maps to based on its naming convention
         const match = file.name.match(/^frq_(\d+)_/);
-        if (match) {
+        if (match && match[1]) {
           const qNum = match[1];
           const { data: urlData } = supabase.storage.from('better').getPublicUrl(`uploads/${file.name}`);
           currentImages[qNum] = {
